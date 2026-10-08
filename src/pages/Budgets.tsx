@@ -28,7 +28,7 @@ export default function BudgetsPage() {
   const [editing, setEditing] = useState<Budget | null>(null)
   const [form] = Form.useForm()
 
-  const { data = [], isLoading } = useQuery({
+  const { data = [] } = useQuery({
     queryKey: ['budgets', month],
     queryFn: () => getBudgets(month),
   })
@@ -70,7 +70,16 @@ export default function BudgetsPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: 16,
+          flexWrap: 'wrap',
+          gap: 8,
+        }}
+      >
         <Typography.Title level={4} style={{ margin: 0 }}>
           预算管理
         </Typography.Title>
@@ -78,7 +87,7 @@ export default function BudgetsPage() {
           <DatePicker
             picker="month"
             value={dayjs(month)}
-            onChange={(d) => setMonth(d.format('YYYY-MM'))}
+            onChange={(d) => setMonth((d || dayjs()).format('YYYY-MM'))}
           />
           <Button type="primary" onClick={openCreate}>
             设置预算

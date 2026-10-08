@@ -2,30 +2,27 @@ import { useState } from 'react'
 import {
   Table,
   Button,
-  Modal,
   Form,
   Input,
   Select,
   DatePicker,
-  InputNumber,
   Popconfirm,
   Space,
   Typography,
   Tag,
   message,
+  Grid,
 } from 'antd'
+import { DownloadOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import {
-  getTransactions,
-  createTransaction,
-  updateTransaction,
-  deleteTransaction,
-  type TransactionInput,
-} from '../api/transactions'
+import { getTransactions, deleteTransaction } from '../api/transactions'
 import { getAccounts } from '../api/accounts'
 import { getCategories } from '../api/categories'
+import { formatMoney } from '../lib/format'
+import { downloadCsv } from '../lib/csv'
+import TransactionFormModal from '../components/TransactionFormModal'
 import type { Transaction, TransactionType } from '../types'
 
 interface Filters {
@@ -39,12 +36,16 @@ interface Filters {
 
 export default function TransactionsPage() {
   const qc = useQueryClient()
-  const [open, setOpen] = useState(false)
+  const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<Transaction | null>(null)
-  const [form] = Form.useForm()
+  const [exporting, setExporting] = useState(false)
   const [filters, setFilters] = useState<Filters>({})
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
+
+  // 小屏（<768px）适配：筛选表单纵向布局、表格隐藏次要列
+  const screens = Grid.useBreakpoint()
+  const isMobile = !screens.md
 
   const { data, isLoading } = useQuery({
     queryKey: ['transactions', filters, page, pageSize],
@@ -57,41 +58,23 @@ export default function TransactionsPage() {
     queryFn: () => getCategories(),
   })
 
-  const saveMut = useMutation({
-    mutationFn: (vals: TransactionInput & { date: Dayjs }) => {
-      const payload: TransactionInput = {
-        ...vals,
-        date: (vals.date as Dayjs).format('YYYY-MM-DD'),
-      }
-      return editing ? updateTransaction(editing.id, payload) : createTransaction(payload)
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['transactions'] })
-      qc.invalidateQueries({ queryKey: ['accounts'] })
-      setOpen(false)
-      message.success('保存成功')
-    },
-  })
-
   const delMut = useMutation({
     mutationFn: deleteTransaction,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['transactions'] })
       qc.invalidateQueries({ queryKey: ['accounts'] })
+      qc.invalidateQueries({ queryKey: ['budgets'] })
     },
   })
 
   const openCreate = () => {
     setEditing(null)
-    form.resetFields()
-    form.setFieldsValue({ type: 'expense', date: dayjs() })
-    setOpen(true)
+    setModalOpen(true)
   }
 
   const openEdit = (r: Transaction) => {
     setEditing(r)
-    form.setFieldsValue({ ...r, date: dayjs(r.date) })
-    setOpen(true)
+    setModalOpen(true)
   }
 
   const applyFilters = (values: Filters & { range?: [Dayjs, Dayjs] | null }) => {
@@ -105,9 +88,35 @@ export default function TransactionsPage() {
     setPage(1)
   }
 
+  // 按当前筛选条件导出全部记录为 CSV
+  const exportCsv = async () => {
+    try {
+      setExporting(true)
+      const res = await getTransactions({ ...filters, page: 1, size: 10000 })
+      downloadCsv(
+        `交易记录_${dayjs().format('YYYYMMDD_HHmmss')}`,
+        ['日期', '账户', '分类', '类型', '金额', '备注'],
+        res.content.map((t) => [
+          t.date,
+          t.accountName || '',
+          t.categoryName || '',
+          t.type === 'income' ? '收入' : '支出',
+          Number(t.amount).toFixed(2),
+          t.note || '',
+        ]),
+      )
+      message.success(`已导出 ${res.content.length} 条记录`)
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const columns = [
     { title: '日期', dataIndex: 'date', width: 110 },
-    { title: '账户', dataIndex: 'accountName', render: (v: string) => v || '-' },
+    // 小屏隐藏「账户」「备注」次要列，保留核心信息
+    ...(isMobile
+      ? []
+      : [{ title: '账户', dataIndex: 'accountName', render: (v: string) => v || '-' }]),
     { title: '分类', dataIndex: 'categoryName', render: (v: string) => v || '-' },
     {
       title: '类型',
@@ -120,11 +129,11 @@ export default function TransactionsPage() {
       dataIndex: 'amount',
       render: (v: number, r: Transaction) => (
         <span style={{ color: r.type === 'income' ? '#cf1322' : '#3f8600', fontWeight: 600 }}>
-          {r.type === 'income' ? '+' : '-'}¥{Number(v).toFixed(2)}
+          {r.type === 'income' ? '+' : '-'}¥{formatMoney(v)}
         </span>
       ),
     },
-    { title: '备注', dataIndex: 'note', render: (v: string) => v || '-' },
+    ...(isMobile ? [] : [{ title: '备注', dataIndex: 'note', render: (v: string) => v || '-' }]),
     {
       title: '操作',
       width: 120,
@@ -141,21 +150,39 @@ export default function TransactionsPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: 16,
+          flexWrap: 'wrap',
+          gap: 8,
+        }}
+      >
         <Typography.Title level={4} style={{ margin: 0 }}>
           交易记录
         </Typography.Title>
-        <Button type="primary" onClick={openCreate}>
-          新增交易
-        </Button>
+        <Space>
+          <Button icon={<DownloadOutlined />} loading={exporting} onClick={exportCsv}>
+            导出 CSV
+          </Button>
+          <Button type="primary" onClick={openCreate}>
+            新增交易
+          </Button>
+        </Space>
       </div>
 
-      <Form layout="inline" onFinish={applyFilters} style={{ marginBottom: 16, rowGap: 8 }}>
+      <Form
+        layout={isMobile ? 'vertical' : 'inline'}
+        onFinish={applyFilters}
+        style={{ marginBottom: 16, rowGap: 8 }}
+      >
         <Form.Item name="accountId" label="账户">
           <Select
             allowClear
             placeholder="全部"
-            style={{ width: 150 }}
+            style={{ width: isMobile ? '100%' : 150 }}
             options={accounts.map((a) => ({ value: a.id, label: a.name }))}
           />
         </Form.Item>
@@ -163,7 +190,7 @@ export default function TransactionsPage() {
           <Select
             allowClear
             placeholder="全部"
-            style={{ width: 130 }}
+            style={{ width: isMobile ? '100%' : 130 }}
             options={categories.map((c) => ({ value: c.id, label: c.name }))}
           />
         </Form.Item>
@@ -171,7 +198,7 @@ export default function TransactionsPage() {
           <Select
             allowClear
             placeholder="全部"
-            style={{ width: 110 }}
+            style={{ width: isMobile ? '100%' : 110 }}
             options={[
               { value: 'income', label: '收入' },
               { value: 'expense', label: '支出' },
@@ -179,13 +206,17 @@ export default function TransactionsPage() {
           />
         </Form.Item>
         <Form.Item name="range" label="日期">
-          <DatePicker.RangePicker />
+          <DatePicker.RangePicker style={{ width: isMobile ? '100%' : undefined }} />
         </Form.Item>
         <Form.Item name="keyword" label="关键词">
-          <Input allowClear placeholder="备注搜索" style={{ width: 150 }} />
+          <Input
+            allowClear
+            placeholder="备注搜索"
+            style={{ width: isMobile ? '100%' : 150 }}
+          />
         </Form.Item>
         <Form.Item>
-          <Button type="primary" htmlType="submit">
+          <Button type="primary" htmlType="submit" style={{ width: isMobile ? '100%' : undefined }}>
             搜索
           </Button>
         </Form.Item>
@@ -196,6 +227,7 @@ export default function TransactionsPage() {
         loading={isLoading}
         dataSource={data?.content || []}
         columns={columns}
+        scroll={{ x: isMobile ? 480 : 720 }}
         pagination={{
           current: page,
           pageSize,
@@ -208,40 +240,11 @@ export default function TransactionsPage() {
         }}
       />
 
-      <Modal
-        title={editing ? '编辑交易' : '新增交易'}
-        open={open}
-        onCancel={() => setOpen(false)}
-        onOk={() => form.submit()}
-        confirmLoading={saveMut.isPending}
-        destroyOnClose
-      >
-        <Form form={form} layout="vertical" onFinish={(v) => saveMut.mutate(v)}>
-          <Form.Item name="type" label="类型" rules={[{ required: true }]}>
-            <Select
-              options={[
-                { value: 'expense', label: '支出' },
-                { value: 'income', label: '收入' },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="accountId" label="账户" rules={[{ required: true, message: '请选择账户' }]}>
-            <Select options={accounts.map((a) => ({ value: a.id, label: a.name }))} />
-          </Form.Item>
-          <Form.Item name="categoryId" label="分类" rules={[{ required: true, message: '请选择分类' }]}>
-            <Select options={categories.map((c) => ({ value: c.id, label: c.name }))} />
-          </Form.Item>
-          <Form.Item name="amount" label="金额" rules={[{ required: true, message: '请输入金额' }]}>
-            <InputNumber min={0} precision={2} style={{ width: '100%' }} prefix="¥" />
-          </Form.Item>
-          <Form.Item name="date" label="日期" rules={[{ required: true, message: '请选择日期' }]}>
-            <DatePicker style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="note" label="备注">
-            <Input placeholder="可选" />
-          </Form.Item>
-        </Form>
-      </Modal>
+      <TransactionFormModal
+        open={modalOpen}
+        editing={editing}
+        onClose={() => setModalOpen(false)}
+      />
     </div>
   )
 }

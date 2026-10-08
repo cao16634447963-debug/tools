@@ -15,6 +15,12 @@ body {
   color: #1f1f1f;
 }
 
+/* 深色模式下的全局背景（由 store/theme.ts 设置 html[data-theme]） */
+html[data-theme='dark'] body {
+  background: #141414;
+  color: rgba(255, 255, 255, 0.85);
+}
+
 #root {
   width: 100%;
   max-width: 100%;
